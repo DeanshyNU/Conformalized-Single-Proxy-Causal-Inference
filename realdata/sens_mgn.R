@@ -11,6 +11,7 @@ seed <- as.integer(args[3])
 ## load libraries
 ########################################
 suppressPackageStartupMessages(library(grf))
+suppressPackageStartupMessages(library(dplyr))
 options(warn=-1)
 
 ########################################

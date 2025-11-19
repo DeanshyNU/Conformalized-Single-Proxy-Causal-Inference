@@ -32,9 +32,9 @@ cat(paste(" - Running counterfactual prediction on synthetic data with marginall
 ########################################
 ## Output direcroty
 ########################################
-out_dir <- "../results/realdata/"
+out_dir <- "/projects/p32685/cfsensitivity_results/realdata/"
 if(!dir.exists(out_dir)){
-  dir.create(out_dir)
+  dir.create(out_dir, recursive = TRUE)
 }
 
 
@@ -89,6 +89,10 @@ test.ex = predict(e.model, newdata=test.X, num.threads=1)$predictions
 test.lx = hat.p * (1+ 1/Gamma * (1-test.ex)/test.ex)
 test.ux = hat.p * (1+ Gamma* (1-test.ex)/(test.ex))
 test.pred = predict(t.mdl, test.X, quantile=c(alpha/2, 1-alpha/2)) 
+# ✅ 兼容 grf 新旧版本
+if (is.list(test.pred) && "predictions" %in% names(test.pred)) {
+  test.pred <- test.pred$predictions
+}
 n_test = length(test.Y1)
 
 

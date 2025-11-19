@@ -101,7 +101,11 @@ test.Y1 = test.data$Y1
 test.ex = predict(e.model, newdata=test.X)$predictions 
 test.lx = hat.p*(1+ (1-test.ex)/(test.ex*Gamma))
 test.ux = hat.p*(1+ Gamma* (1-test.ex)/(test.ex))
-test.pred = predict(t.mdl, test.X, quantile=c(alpha/2, 1-alpha/2)) 
+test.pred = predict(t.mdl, test.X, quantile=c(alpha/2, 1-alpha/2))
+# ✅ 兼容 grf 新旧版本
+if (is.list(test.pred) && "predictions" %in% names(test.pred)) {
+  test.pred <- test.pred$predictions
+} 
 
 ########################################
 ## the confounding-aware algorithm  

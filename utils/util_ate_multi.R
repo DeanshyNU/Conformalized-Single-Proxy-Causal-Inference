@@ -8,14 +8,22 @@
 # obs = FALSE generate all data of size n
 ############################################################
 
-data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE){
+data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20){
   X = matrix(runif(n*p),nrow=n,ncol=p)
-  U = rnorm(n) * abs(1+0.5*sin(2.5*X[,1]))
-  Y1 = X %*% beta + U
+  
+  # 生成多维 U（默认 20 维）
+  U = matrix(0, nrow=n, ncol=u_dim)
+  for (j in 1:u_dim) {
+    U[,j] = rnorm(n) * abs(1+0.5*sin(2.5*X[,min(j, p)]))
+  }
+  
+  # 对于 Y1 和 propensity，使用 U 的第一列（保持与原逻辑一致）
+  U1 = U[,1]
+  Y1 = X %*% beta + U1
   prop.x = exp(alpha0 + X%*%beta)/(1+exp(alpha0+X%*%beta))
   p.x = (1/(prop.x + (1-prop.x)/Gamma ) -1)/( 1/(prop.x + (1-prop.x)/Gamma) - 1/(prop.x + Gamma*(1-prop.x)))
   t.x = qnorm(1-p.x/2) * abs(1+0.5*sin(2.5*X[,1]))
-  prop.xu = (prop.x/(prop.x+Gamma*(1-prop.x)))*(abs(U)>t.x) + (prop.x/(prop.x+ (1-prop.x)/Gamma))*(abs(U)<=t.x)
+  prop.xu = (prop.x/(prop.x+Gamma*(1-prop.x)))*(abs(U1)>t.x) + (prop.x/(prop.x+ (1-prop.x)/Gamma))*(abs(U1)<=t.x)
   TT = rbinom(n, size=1, prob=prop.xu)
   
   if (obs==FALSE){
@@ -23,9 +31,9 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE){
   }else{
     n_useful = sum(TT)
     while (n_useful < n){
-      add.data = data.gen.ate(n,p,Gamma,beta,alpha0,FALSE)
+      add.data = data.gen.ate(n,p,Gamma,beta,alpha0,FALSE,u_dim)
       X = rbind(X, add.data$X)
-      U = c(U, add.data$U)
+      U = rbind(U, add.data$U)  # U 现在是矩阵
       Y1 = c(Y1, add.data$Y1)
       prop.x = c(prop.x, add.data$ex)
       prop.xu = c(prop.xu, add.data$exu)

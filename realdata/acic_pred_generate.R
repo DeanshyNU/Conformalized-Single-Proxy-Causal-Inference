@@ -1,4 +1,4 @@
-library(tidyverse)
+library(dplyr)
 library(grf)
 
 set.seed(1)
@@ -27,6 +27,10 @@ p.score = predict(ps.model, X, num.threads=1)$predictions
 
 
 qtls = predict(qtl.model, quantile=c(0.25,0.75), newdata = X)
+# ✅ 兼容 grf 新旧版本
+if (is.list(qtls) && "predictions" %in% names(qtls)) {
+  qtls <- qtls$predictions
+}
 hat.rx = qtls[,2] - qtls[,1]
 
 cat("Done.\n")
