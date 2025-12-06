@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 ########################################
-## input configurations
+## input configurations；参数设置
 ########################################
 args <- commandArgs(trailingOnly = TRUE)
 p <- as.integer(args[1])
@@ -41,7 +41,7 @@ if(!dir.exists(out_dir)){
 }
 
 ########################################
-## Parameter
+## Parameter； 数据生成参数
 ########################################
 alpha0 = 0
 n_test = 500
@@ -53,6 +53,9 @@ pp = mean(data.gen.ate(n*1000,p,Gamma,beta,alpha0,obs=FALSE)$T)
 set.seed(seed)
 ########################################
 ## fit on the training fold
+
+# 仅使用 T=1 的样本训练 CQR 模型
+# 训练 nonconformity score 函数
 ########################################
 train.data = data.gen.ate(n,p,Gamma,beta,alpha0,obs=TRUE)
 train.X = (train.data$X[train.data$T==1,])[1:n,]
@@ -61,8 +64,9 @@ train.Y = (train.data$Y1[train.data$T==1])[1:n]
 train.score = conform.score(train.X, train.Y, "cqr", trained_model=NULL, quantile=1-alpha)
 t.mdl = train.score$model
 
+
 ########################################
-## calibration 
+## calibration；也是只有T=1
 ########################################
 calib.data = data.gen.ate(n,p,Gamma,beta,alpha0,obs=TRUE)
 calib.X = (calib.data$X[calib.data$T==1,])[1:n,]
@@ -71,23 +75,24 @@ calib.ex = (calib.data$ex[calib.data$T==1])[1:n]
 n_calib = length(calib.Y)
 
 # lower and upper bounds of weight function
-calib.lx = pp * (1 + (1-calib.ex) / (calib.ex*Gamma))
+calib.lx = pp * (1 + (1-calib.ex) / (calib.ex*Gamma)) 
 calib.ux = pp * (1 + Gamma * (1-calib.ex) / (calib.ex))
-calib.nc.w = pp / (calib.data$ex[calib.data$T==1])[1:n]
+calib.nc.w = pp / (calib.data$ex[calib.data$T==1])[1:n] # confounding-unaware weight
 # non-conformity score on calibration data
+# 使用训练数据训练好的CQR模型计算nonconformity score；并且按照score排序
 calib.score = conform.score(calib.X, calib.Y, "cqr", trained_model=t.mdl, quantile=1-alpha)$score
 calib.all = data.frame("score"=calib.score, "lx"=calib.lx, "ux"=calib.ux, "wx"=calib.nc.w, "ex" = calib.ex)
 calib.all = calib.all[order(calib.all$score),]
 rownames(calib.all) = 1:dim(calib.all)[1]
 
 ########################################
-## generate test fold
+## generate test fold；包含所有的T
 ########################################
 test.data = data.gen.ate(n_test,p,Gamma,beta,alpha0,obs=FALSE)
 test.X = test.data$X
 test.Y1 = test.data$Y1
 test.ex = test.data$ex
-test.lx = pp*(1+ 1/Gamma * (1-test.ex)/test.ex)
+test.lx = pp*(1+ 1/Gamma * (1-test.ex)/test.ex) # 真实边界
 test.ux = pp*(1+ Gamma* (1-test.ex)/(test.ex))
 test.pred = predict(t.mdl, test.X, quantile=c(alpha/2, 1-alpha/2)) 
 # ✅ 兼容 grf 新旧版本

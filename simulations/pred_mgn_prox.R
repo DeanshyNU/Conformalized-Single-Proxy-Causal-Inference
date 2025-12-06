@@ -60,31 +60,20 @@ train.X = (train.data$X[train.data$T==1,])[1:n,]
 train.Y = (train.data$Y1[train.data$T==1])[1:n]
 train.U = (train.data$U[train.data$T==1,])[1:n,]  # U 现在是 n x 20 的矩阵
 
-# 【Proximal新增】：根据 w_dim 生成不同维度的 proxy W
+# 【Proximal新增】：根据 w_dim 生成不同维度的 proxy W（仅用于后续采样 W.grid）
 noise_level = 0.5
-if (w_dim < u_dim) {
-  # Case 1: W 维度小于 U（18维）- 只取 U 的前 w_dim 列
-  train.W = train.U[, 1:w_dim] + matrix(rnorm(n * w_dim) * noise_level, nrow=n, ncol=w_dim)
-} else if (w_dim == u_dim) {
-  # Case 2: W 维度等于 U（20维）
-  train.W = train.U + matrix(rnorm(n * u_dim) * noise_level, nrow=n, ncol=u_dim)
-} else {
-  # Case 3: W 维度大于 U（22维）- U + 额外噪声列
+# 当 w_dim > u_dim 时，创建固定的混合矩阵（确保可重复性）
+if (w_dim > u_dim) {
+  set.seed(seed + 999)  # 固定种子确保混合矩阵可重复
   extra_cols = w_dim - u_dim
-  train.W = cbind(
-    train.U + matrix(rnorm(n * u_dim) * noise_level, nrow=n, ncol=u_dim),
-    matrix(rnorm(n * extra_cols), nrow=n, ncol=extra_cols)
-  )
+  M_extra = matrix(rnorm(u_dim * extra_cols), nrow=u_dim, ncol=extra_cols)
+} else {
+  M_extra = NULL
 }
 
 # train the nonconformity score function（原有方法）
 train.score = conform.score(train.X, train.Y, "cqr", trained_model=NULL, quantile=1-alpha)
 t.mdl = train.score$model
-
-# 【Proximal新增】：训练 proxy-based outcome models
-# 使用 (X, W) 联合训练
-train.XW = cbind(train.X, W = train.W)
-t.mdl.prox = quantile_forest(train.XW, train.Y, num.threads = 1)
 
 ########################################
 ## calibration 
@@ -95,19 +84,6 @@ calib.Y = (calib.data$Y1[calib.data$T==1])[1:n]
 calib.U = (calib.data$U[calib.data$T==1,])[1:n,]  # U 是矩阵
 calib.ex = (calib.data$ex[calib.data$T==1])[1:n]
 n_calib = length(calib.Y)
-
-# 【Proximal新增】：为校准集生成 proxy W（与训练集相同逻辑）
-if (w_dim < u_dim) {
-  calib.W = calib.U[, 1:w_dim] + matrix(rnorm(n * w_dim) * noise_level, nrow=n, ncol=w_dim)
-} else if (w_dim == u_dim) {
-  calib.W = calib.U + matrix(rnorm(n * u_dim) * noise_level, nrow=n, ncol=u_dim)
-} else {
-  extra_cols = w_dim - u_dim
-  calib.W = cbind(
-    calib.U + matrix(rnorm(n * u_dim) * noise_level, nrow=n, ncol=u_dim),
-    matrix(rnorm(n * extra_cols), nrow=n, ncol=extra_cols)
-  )
-}
 
 # lower and upper bounds of weight function（原有方法）
 calib.lx = pp * (1 + (1-calib.ex) / (calib.ex*Gamma))
@@ -120,13 +96,6 @@ calib.all = data.frame("score"=calib.score, "lx"=calib.lx, "ux"=calib.ux, "wx"=c
 calib.all = calib.all[order(calib.all$score),]
 rownames(calib.all) = 1:dim(calib.all)[1]
 
-# 【Proximal新增】：计算 proxy-based predictions for calibration
-calib.XW = cbind(calib.X, W = calib.W)
-calib.pred.prox = predict(t.mdl.prox, calib.XW, quantile=c(alpha/2, 1-alpha/2))
-if (is.list(calib.pred.prox) && "predictions" %in% names(calib.pred.prox)) {
-  calib.pred.prox <- calib.pred.prox$predictions
-}
-
 ########################################
 ## generate test fold
 ########################################
@@ -138,31 +107,11 @@ test.ex = test.data$ex
 test.lx = pp*(1+ 1/Gamma * (1-test.ex)/test.ex)
 test.ux = pp*(1+ Gamma* (1-test.ex)/(test.ex))
 
-# 【Proximal新增】：为测试集生成 proxy W（与训练集相同逻辑）
-if (w_dim < u_dim) {
-  test.W = test.U[, 1:w_dim] + matrix(rnorm(n_test * w_dim) * noise_level, nrow=n_test, ncol=w_dim)
-} else if (w_dim == u_dim) {
-  test.W = test.U + matrix(rnorm(n_test * u_dim) * noise_level, nrow=n_test, ncol=u_dim)
-} else {
-  extra_cols = w_dim - u_dim
-  test.W = cbind(
-    test.U + matrix(rnorm(n_test * u_dim) * noise_level, nrow=n_test, ncol=u_dim),
-    matrix(rnorm(n_test * extra_cols), nrow=n_test, ncol=extra_cols)
-  )
-}
-
 # predictions（原有方法）
 test.pred = predict(t.mdl, test.X, quantile=c(alpha/2, 1-alpha/2)) 
 # ✅ 兼容 grf 新旧版本
 if (is.list(test.pred) && "predictions" %in% names(test.pred)) {
   test.pred <- test.pred$predictions
-}
-
-# 【Proximal新增】：proxy-based predictions
-test.XW = cbind(test.X, W = test.W)
-test.pred.prox = predict(t.mdl.prox, test.XW, quantile=c(alpha/2, 1-alpha/2))
-if (is.list(test.pred.prox) && "predictions" %in% names(test.pred.prox)) {
-  test.pred.prox <- test.pred.prox$predictions
 }
 
 ########################################
@@ -229,77 +178,122 @@ cat("Done.\n")
 
 cat(" - Computing the proximal conformal inference...")
 
-# Step 1: 估计 proxy-based propensity score（用于构造 feasible bounds）
-# 训练倾向得分模型（使用 X 和 W）
-train.full.data = data.gen.ate(n,p,Gamma,beta,alpha0,obs=FALSE,u_dim)
-train.full.X = train.full.data$X
-train.full.U = train.full.data$U  # U 是矩阵
+# 【真实边界版本】：计算真实的 e(X,W) = P(T=1|X,W)
+# 基于数学推导的 closed form 公式（完全向量化版本，无 for-loop）
+compute_lx_ux_from_e_true <- function(X_mat, W_grid, pbar, Gamma, beta, alpha0, noise_level, eps = 1e-3) {
+  n <- nrow(X_mat)
+  K <- nrow(W_grid)
+  if (n < 1 || K < 1) {
+    stop("Empty X_mat or W_grid in compute_lx_ux_from_e_true")
+  }
+  
+  # 提取 W_grid 的第一列（对应 U1）
+  W1_grid <- W_grid[, 1]  # K × 1 向量
+  
+  # Step 1: 计算所有 x 的基础量（向量化，n × 1）
+  logit_ex <- alpha0 + X_mat %*% beta
+  ex <- exp(logit_ex) / (1 + exp(logit_ex))
+  
+  ax <- ex / (ex + Gamma * (1 - ex))
+  bx <- ex / (ex + (1 - ex) / Gamma)
+  
+  s_x <- abs(1 + 0.5 * sin(2.5 * X_mat[, 1]))
+  
+  prop_x <- ex
+  p_x <- (1 / (prop_x + (1 - prop_x) / Gamma) - 1) / 
+         (1 / (prop_x + (1 - prop_x) / Gamma) - 1 / (prop_x + Gamma * (1 - prop_x)))
+  t_x <- qnorm(1 - p_x / 2) * s_x
+  
+  # Step 2: 计算后验分布参数（向量化，n × 1）
+  sigma_w_sq <- noise_level^2
+  tau_sq <- 1 / (1 / sigma_w_sq + 1 / (s_x^2))
+  tau <- sqrt(tau_sq)
+  
+  # Step 3: 使用矩阵广播计算所有 (x, w) 组合的 μ(x,w)
+  # tau_sq 是 n × 1，W1_grid 是 K × 1
+  # 使用 outer 得到 n × K 矩阵：mu_mat[i,k] = tau_sq[i] * W1_grid[k] / sigma_w_sq
+  mu_mat <- outer(tau_sq / sigma_w_sq, W1_grid, "*")  # n × K
+  
+  # Step 4: 计算 z_upper 和 z_lower（矩阵广播）
+  # t_x 是 n × 1，tau 是 n × 1，mu_mat 是 n × K
+  # 需要将 t_x 和 tau 扩展到 n × K
+  t_x_mat <- matrix(t_x, nrow = n, ncol = K)  # n × K（每列相同）
+  tau_mat <- matrix(tau, nrow = n, ncol = K)   # n × K（每列相同）
+  
+  z_upper_mat <- (t_x_mat - mu_mat) / tau_mat  # n × K
+  z_lower_mat <- (-t_x_mat - mu_mat) / tau_mat  # n × K
+  
+  # Step 5: 计算 q(x,w) 矩阵（n × K）
+  q_mat <- 1 - pnorm(z_upper_mat) + pnorm(z_lower_mat)
+  
+  # Step 6: 计算 e(x,w) 矩阵（n × K）
+  # ax 和 bx 是 n × 1，需要扩展到 n × K
+  ax_mat <- matrix(ax, nrow = n, ncol = K)  # n × K（每列相同）
+  bx_mat <- matrix(bx, nrow = n, ncol = K)  # n × K（每列相同）
+  ex_mat <- ax_mat * q_mat + bx_mat * (1 - q_mat)
+  
+  # Step 7: 裁剪并取每行的 max/min
+  ex_mat <- pmax(pmin(ex_mat, 1 - eps), eps)
+  emax <- apply(ex_mat, 1, max)  # n × 1
+  emin <- apply(ex_mat, 1, min)  # n × 1
+  
+  lx <- pbar / emax
+  ux <- pbar / emin
+  
+  return(list(lx = lx, ux = ux))
+}
 
-# 生成 proxy W（与训练集相同逻辑）
+# sample candidate W grid from training W (for robustness and efficiency)
+# 为全部训练数据生成 proxy W（用于采样 W grid）
 if (w_dim < u_dim) {
-  train.full.W = train.full.U[, 1:w_dim] + matrix(rnorm(nrow(train.full.X) * w_dim) * noise_level, nrow=nrow(train.full.X), ncol=w_dim)
+  train.W.full = train.data$U[, 1:w_dim] + matrix(rnorm(nrow(train.data$X) * w_dim) * noise_level, nrow=nrow(train.data$X), ncol=w_dim)
 } else if (w_dim == u_dim) {
-  train.full.W = train.full.U + matrix(rnorm(nrow(train.full.X) * u_dim) * noise_level, nrow=nrow(train.full.X), ncol=u_dim)
+  train.W.full = train.data$U + matrix(rnorm(nrow(train.data$X) * u_dim) * noise_level, nrow=nrow(train.data$X), ncol=u_dim)
 } else {
   extra_cols = w_dim - u_dim
-  train.full.W = cbind(
-    train.full.U + matrix(rnorm(nrow(train.full.X) * u_dim) * noise_level, nrow=nrow(train.full.X), ncol=u_dim),
-    matrix(rnorm(nrow(train.full.X) * extra_cols), nrow=nrow(train.full.X), ncol=extra_cols)
+  W_extra.full = train.data$U %*% M_extra + matrix(rnorm(nrow(train.data$X) * extra_cols) * noise_level, nrow=nrow(train.data$X), ncol=extra_cols)
+  train.W.full = cbind(
+    train.data$U + matrix(rnorm(nrow(train.data$X) * u_dim) * noise_level, nrow=nrow(train.data$X), ncol=u_dim),
+    W_extra.full
   )
 }
 
-train.full.T = train.full.data$T
-train.full.XW = cbind(train.full.X, train.full.W)
+set.seed(seed + 123)
+w_grid_size <- min(50, nrow(train.W.full))
+W.grid <- train.W.full[sample(nrow(train.W.full), w_grid_size), , drop = FALSE]
 
-# 训练 propensity model with proxy
-e.model.prox = regression_forest(train.full.XW, train.full.T, num.threads = 1)
+# Step 2: 为校准集计算真实的 proxy-based bounds
+# 使用真实的 e(X,W) 公式，不依赖 Gamma（但需要 Gamma 来计算 e(X,W) 本身）
+prox_bounds_calib <- compute_lx_ux_from_e_true(calib.X, W.grid, pbar = pp, Gamma = Gamma, 
+                                                beta = beta, alpha0 = alpha0, noise_level = noise_level)
+calib.lx.prox <- prox_bounds_calib$lx
+calib.ux.prox <- prox_bounds_calib$ux
 
-# Step 2: 为校准集计算 proxy-based feasible ITE bounds
-# 预测 e(X,W)
-calib.ex.prox = predict(e.model.prox, calib.XW)$predictions
+# Step 3: 对测试集计算真实的 proximal bounds
+prox_bounds_test <- compute_lx_ux_from_e_true(test.X, W.grid, pbar = pp, Gamma = Gamma,
+                                               beta = beta, alpha0 = alpha0, noise_level = noise_level)
+test.lx.prox <- prox_bounds_test$lx
+test.ux.prox <- prox_bounds_test$ux
 
-# 计算 feasible bounds（类似 lx/ux，但基于 proxy）
-# 这里简化：用 proxy-enhanced propensity score 计算边界
-calib.lx.prox = pp * (1 + (1-calib.ex.prox) / (calib.ex.prox*Gamma))
-calib.ux.prox = pp * (1 + Gamma * (1-calib.ex.prox) / (calib.ex.prox))
+# Step 4: 使用与 confounding-aware 相同的加权 conformal 流程（仅替换 l/u）
+prox.sum.num = rep(0, n_calib)
+prox.sum.den = rep(0, n_calib)
+prox.sum.num[1] = calib.lx.prox[1]
+prox.sum.den[1] = calib.lx.prox[1] + sum(calib.ux.prox[2:n_calib])
+for (k in 2:n_calib){
+  prox.sum.num[k] = prox.sum.num[k-1] + calib.lx.prox[k]
+  prox.sum.den[k] = prox.sum.den[k-1] - calib.ux.prox[k] + calib.lx.prox[k]
+}
 
-# Step 3: 计算 ITE 点估计（用于 nonconformity score）
-# 简化版：直接用 prediction interval 的中点作为点估计
-calib.ite.prox = (calib.pred.prox[,2] + calib.pred.prox[,1]) / 2
-
-# Step 4: 计算 feasible ITE interval 的上下界
-# 使用简化的 feasible set：[tau_min, tau_max]
-# 这里用 proxy-based bounds 估计
-calib.tau.min = calib.pred.prox[,1] - mean(calib.pred.prox[,2] - calib.pred.prox[,1]) * 
-                (1 - calib.lx.prox / calib.ux.prox)
-calib.tau.max = calib.pred.prox[,2] + mean(calib.pred.prox[,2] - calib.pred.prox[,1]) * 
-                (calib.ux.prox / calib.lx.prox - 1)
-
-# Step 5: 计算 distance-based nonconformity score
-# score = distance from ITE point estimate to feasible interval
-calib.score.prox = pmax(0, 
-                        calib.tau.min - calib.ite.prox,  # 低于下界
-                        calib.ite.prox - calib.tau.max)  # 高于上界
-
-# Step 6: 计算 conformal quantile
-q_alpha.prox = quantile(calib.score.prox, probs = 1 - alpha, type = 1)
-
-# Step 7: 对测试集应用 proximal method
-test.ex.prox = predict(e.model.prox, test.XW)$predictions
-
-# 计算测试集的 feasible bounds
-test.lx.prox = pp * (1 + (1-test.ex.prox) / (test.ex.prox*Gamma))
-test.ux.prox = pp * (1 + Gamma * (1-test.ex.prox) / (test.ex.prox))
-
-# 计算 base feasible interval
-test.tau.min = test.pred.prox[,1] - mean(test.pred.prox[,2] - test.pred.prox[,1]) * 
-               (1 - test.lx.prox / test.ux.prox)
-test.tau.max = test.pred.prox[,2] + mean(test.pred.prox[,2] - test.pred.prox[,1]) * 
-               (test.ux.prox / test.lx.prox - 1)
-
-# 用 conformal quantile 扩张区间
-prox.test.lo = test.tau.min - q_alpha.prox
-prox.test.hi = test.tau.max + q_alpha.prox
+prox.test.lo = rep(0, n_test)
+prox.test.hi = rep(0, n_test)
+for (ii in 1:n_test){
+  prox.ratios = prox.sum.num / (prox.sum.den + test.ux.prox[ii])
+  prox.kstar = min(which(prox.ratios > 1 - alpha))
+  prox.v.kstar = calib.all$score[prox.kstar]
+  prox.test.lo[ii] = test.pred[ii,1] - prox.v.kstar
+  prox.test.hi[ii] = test.pred[ii,2] + prox.v.kstar
+}
 
 # 评估覆盖率
 prox.cover = (prox.test.lo <= test.Y1) * (prox.test.hi >= test.Y1)

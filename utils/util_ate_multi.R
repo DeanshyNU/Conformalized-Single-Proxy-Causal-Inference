@@ -8,7 +8,7 @@
 # obs = FALSE generate all data of size n
 ############################################################
 
-data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20){
+data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=20, noise_level=0.5, w_seed_offset=999){
   X = matrix(runif(n*p),nrow=n,ncol=p)
   
   # 生成多维 U（默认 20 维）
@@ -17,30 +17,60 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20){
     U[,j] = rnorm(n) * abs(1+0.5*sin(2.5*X[,min(j, p)]))
   }
   
-  # 对于 Y1 和 propensity，使用 U 的第一列（保持与原逻辑一致）
-  U1 = U[,1]
-  Y1 = X %*% beta + U1
-  prop.x = exp(alpha0 + X%*%beta)/(1+exp(alpha0+X%*%beta))
-  p.x = (1/(prop.x + (1-prop.x)/Gamma ) -1)/( 1/(prop.x + (1-prop.x)/Gamma) - 1/(prop.x + Gamma*(1-prop.x)))
-  t.x = qnorm(1-p.x/2) * abs(1+0.5*sin(2.5*X[,1]))
-  prop.xu = (prop.x/(prop.x+Gamma*(1-prop.x)))*(abs(U1)>t.x) + (prop.x/(prop.x+ (1-prop.x)/Gamma))*(abs(U1)<=t.x)
-  TT = rbinom(n, size=1, prob=prop.xu)
+  # 生成多维 W（proxy 变量）
+  # W 依赖于 U 和 X：W = intercept + U %*% beta_u + X %*% beta_x
+  # 使用特征矩阵 [1, U, X] 和系数矩阵 beta_w 统一生成
+  
+  # 保存当前随机种子状态（如果存在）
+  if (exists(".Random.seed", envir = .GlobalEnv)) {
+    old_seed = get(".Random.seed", envir = .GlobalEnv)
+    seed_exists = TRUE
+  } else {
+    seed_exists = FALSE
+  }
+  
+  # 使用固定种子生成系数矩阵（确保可重复性）
+  set.seed(w_seed_offset)
+  # 特征矩阵：[1, U, X]，维度 n × (1 + u_dim + p)
+  features = cbind(rep(1, n), U, X)
+  # 系数矩阵：(1 + u_dim + p) × w_dim
+  # 第一行是截距，接下来 u_dim 行是 U 的系数，最后 p 行是 X 的系数
+  beta_w = matrix(rnorm((1 + u_dim + p) * w_dim, 0, 0.5), 
+                  nrow=(1 + u_dim + p), ncol=w_dim)
+  
+  # 恢复随机种子（如果之前存在）
+  if (seed_exists) {
+    assign(".Random.seed", old_seed, envir = .GlobalEnv)
+  }
+  
+  # 生成 W：W = [1, U, X] %*% beta_w
+  W = features %*% beta_w
+  
+    # 对于 Y1 和 propensity，使用 U 的第一列（保持与原逻辑一致）
+    U1 = U[,1]
+    Y1 = X %*% beta + U1
+    prop.x = exp(alpha0 + X%*%beta)/(1+exp(alpha0+X%*%beta))
+    p.x = (1/(prop.x + (1-prop.x)/Gamma ) -1)/( 1/(prop.x + (1-prop.x)/Gamma) - 1/(prop.x + Gamma*(1-prop.x)))
+    t.x = qnorm(1-p.x/2) * abs(1+0.5*sin(2.5*X[,1]))
+    prop.xu = (prop.x/(prop.x+Gamma*(1-prop.x)))*(abs(U1)>t.x) + (prop.x/(prop.x+ (1-prop.x)/Gamma))*(abs(U1)<=t.x)
+    TT = rbinom(n, size=1, prob=prop.xu)
   
   if (obs==FALSE){
-    return(list("T"=TT, "X"=X, "U"=U, "Y1"=Y1, "ex"=prop.x, "exu"=prop.xu))
+    return(list("T"=TT, "X"=X, "U"=U, "W"=W, "Y1"=Y1, "ex"=prop.x, "exu"=prop.xu))
   }else{
     n_useful = sum(TT)
     while (n_useful < n){
-      add.data = data.gen.ate(n,p,Gamma,beta,alpha0,FALSE,u_dim)
+      add.data = data.gen.ate(n,p,Gamma,beta,alpha0,FALSE,u_dim,w_dim,noise_level,w_seed_offset)
       X = rbind(X, add.data$X)
       U = rbind(U, add.data$U)  # U 现在是矩阵
+      W = rbind(W, add.data$W)  # W 现在是矩阵
       Y1 = c(Y1, add.data$Y1)
       prop.x = c(prop.x, add.data$ex)
       prop.xu = c(prop.xu, add.data$exu)
       TT = c(TT, add.data$T)
       n_useful = sum(TT)
     }
-    return(list("T"=TT, "X"=X, "U"=U, "Y1"=Y1, "ex"=prop.x, "exu"=prop.xu))
+    return(list("T"=TT, "X"=X, "U"=U, "W"=W, "Y1"=Y1, "ex"=prop.x, "exu"=prop.xu))
   }
 }
 
@@ -55,7 +85,7 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20){
 conform.score <- function(X, Y, method='cqr', trained_model = NULL, quantile=0.9){
   if (method == 'cqr'){
     if (is.null(trained_model)){
-      trained_model = quantile_forest(X,Y,num.threads = 1)
+      trained_model = quantile_forest(X,Y,num.threads = 2)
     }
     # fit quantiles
     qs = predict(trained_model, X,quantile=c((1-quantile)/2, 1-(1-quantile)/2))

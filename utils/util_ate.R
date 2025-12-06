@@ -9,15 +9,22 @@
 ############################################################
 
 data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE){
+  # 从 [0,1] 均匀分布生成 n × p 矩阵
   X = matrix(runif(n*p),nrow=n,ncol=p)
+  # 一维混杂因子：U ~ N(0, σ²)，方差依赖于X的第一维
   U = rnorm(n) * abs(1+0.5*sin(2.5*X[,1]))
+  # 只生成Y(1), 用于counterfactual prediction
   Y1 = X %*% beta + U
+  # e(x) = P(T=1|X=x)
   prop.x = exp(alpha0 + X%*%beta)/(1+exp(alpha0+X%*%beta))
   p.x = (1/(prop.x + (1-prop.x)/Gamma ) -1)/( 1/(prop.x + (1-prop.x)/Gamma) - 1/(prop.x + Gamma*(1-prop.x)))
   t.x = qnorm(1-p.x/2) * abs(1+0.5*sin(2.5*X[,1]))
+  # e(x,u) = P(T=1|X=x,U=u) 确保 E[e(X,U)|X] = e(X)
   prop.xu = (prop.x/(prop.x+Gamma*(1-prop.x)))*(abs(U)>t.x) + (prop.x/(prop.x+ (1-prop.x)/Gamma))*(abs(U)<=t.x)
+  # 根据 e(x,u) 生成 T
   TT = rbinom(n, size=1, prob=prop.xu)
   
+
   if (obs==FALSE){
     return(list("T"=TT, "X"=X, "U"=U, "Y1"=Y1, "ex"=prop.x, "exu"=prop.xu))
   }else{

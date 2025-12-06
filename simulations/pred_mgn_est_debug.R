@@ -74,6 +74,33 @@ if (discrete_ind == 1) {
 } else {
   train.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE)
 }
+
+# 调试输出：检查数据生成的overlap情况
+if (discrete_ind == 1) {
+  cat(" [debug] Data generation check:\n")
+  cat("   True e(x) (prop.x) distribution:\n")
+  cat("     min:", min(train.data$ex), ", max:", max(train.data$ex), "\n")
+  cat("     mean:", mean(train.data$ex), ", sd:", sd(train.data$ex), "\n")
+  cat("     < 0.1:", sum(train.data$ex < 0.1), ", > 0.9:", sum(train.data$ex > 0.9), "\n")
+  cat("   Treatment distribution:\n")
+  cat("     T=0:", sum(train.data$T == 0), ", T=1:", sum(train.data$T == 1), "\n")
+  cat("     hat.p =", mean(train.data$T), "\n")
+  # 检查是否有完全分离：某些X组合只有T=0或只有T=1
+  # 对于离散数据，检查前几列X的组合
+  if (p >= 1) {
+    x1_unique = unique(train.data$X[, 1])
+    perfect_sep_count = 0
+    for (x1_val in x1_unique) {
+      idx = train.data$X[, 1] == x1_val
+      t_vals = train.data$T[idx]
+      if (length(unique(t_vals)) == 1) {
+        perfect_sep_count = perfect_sep_count + 1
+      }
+    }
+    cat("   Perfect separation (X[,1] only):", perfect_sep_count, "out of", length(x1_unique), "unique X[,1] values\n")
+  }
+}
+
 train.X = (train.data$X[train.data$T==1,])[1:n,]
 train.Y = (train.data$Y1[train.data$T==1])[1:n]
 # train the nonconformity score function
@@ -81,15 +108,13 @@ train.score = conform.score(train.X, train.Y, "cqr", trained_model=NULL, quantil
 t.mdl = train.score$model
 # estimate hat{e}(x)
 hat.p = mean(train.data$T)
-# 调试输出：检查训练数据
-cat(" [debug] Training data check:\n")
-cat("   hat.p =", hat.p, "\n")
-cat("   train.data$T (first 10):", head(train.data$T, 10), "\n")
-cat("   train.data$X (first row, first 5):", head(train.data$X[1,], 5), "\n")
-e.model = regression_forest(train.data$X, train.data$T, num.threads = 1)
-# 调试输出：检查 e.model 训练后的预测
-train.ex.check = predict(e.model, newdata=head(train.data$X, 5))$predictions
-cat("   e.model predictions (first 5):", train.ex.check, "\n")
+# 方案三：限制模型复杂度，防止过拟合（离散数据需要更大的 min.node.size）
+# 增大 min.node.size 可以强制模型更保守，避免学到极端的 e(x)
+if (discrete_ind == 1) {
+  e.model = regression_forest(train.data$X, train.data$T, num.threads = 1, min.node.size = 50)
+} else {
+  e.model = regression_forest(train.data$X, train.data$T, num.threads = 1)
+}
 
 ########################################
 ## calibration 
@@ -101,12 +126,10 @@ if (discrete_ind == 1) {
 }
 calib.X = (calib.data$X[calib.data$T==1,])[1:n,]
 calib.Y = (calib.data$Y1[calib.data$T==1])[1:n]
-calib.ex = predict(e.model, newdata=calib.X)$predictions  
+calib.ex = predict(e.model, newdata=calib.X)$predictions
+# 方案一：强制截断 e(x)，防止极端值导致权重失效
+calib.ex = pmax(0.05, pmin(0.95, calib.ex))
 n_calib = length(calib.Y)
-# 调试输出：检查校准数据的 e(x) 预测
-cat(" [debug] Calibration e(x) check:\n")
-cat("   calib.ex (first 5):", head(calib.ex, 5), "\n")
-cat("   calib.ex (min, max, mean):", min(calib.ex), max(calib.ex), mean(calib.ex), "\n")
 
 # 调试输出：检查 e(x) 的分布，看是否极端化
 cat(" [debug] RF e(x) distribution:\n")
@@ -124,7 +147,6 @@ calib.nc.w = hat.p / calib.ex
 cat(" [debug] Gamma =", Gamma, "\n")
 cat(" [debug] First 5 weights comparison:\n")
 cat("   calib.lx (head):", head(calib.lx, 5), "\n")
-cat("   calib.ux (head):", head(calib.ux, 5), "\n")
 cat("   calib.wx (head):", head(calib.nc.w, 5), "\n")
 cat("   ratio lx/wx (head):", head(calib.lx/calib.nc.w, 5), "\n")
 cat("   ratio lx/wx (mean):", mean(calib.lx/calib.nc.w), ", sd:", sd(calib.lx/calib.nc.w), "\n")
@@ -155,14 +177,15 @@ if (discrete_ind == 1) {
 }
 test.X = test.data$X
 test.Y1 = test.data$Y1
-test.ex = predict(e.model, newdata=test.X)$predictions 
+test.ex = predict(e.model, newdata=test.X)$predictions
+# 方案一：强制截断 e(x)，防止极端值导致权重失效
+test.ex = pmax(0.05, pmin(0.95, test.ex))
 test.lx = hat.p*(1+ (1-test.ex)/(test.ex*Gamma))
 test.ux = hat.p*(1+ Gamma* (1-test.ex)/(test.ex))
 test.wx = hat.p / test.ex
 # 调试输出：检查测试集权重
 cat(" [debug] Test weights comparison:\n")
 cat("   test.lx (head):", head(test.lx, 5), "\n")
-cat("   test.ux (head):", head(test.ux, 5), "\n")
 cat("   test.wx (head):", head(test.wx, 5), "\n")
 cat("   ratio lx/wx (head):", head(test.lx/test.wx, 5), "\n")
 cat("   ratio lx/wx (mean):", mean(test.lx/test.wx), ", sd:", sd(test.lx/test.wx), "\n")
