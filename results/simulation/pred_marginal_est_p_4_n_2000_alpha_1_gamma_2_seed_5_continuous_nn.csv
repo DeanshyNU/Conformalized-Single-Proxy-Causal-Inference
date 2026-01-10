@@ -1,0 +1,2 @@
+c.cov,c.len,nc.cov,nc.len,gap,l_err,u_err,l_inv,n,p,n_calib,gamma,alpha,seed,data_type,method
+0.932,4.932847012896138,0.84,3.8468502553240613,0.07305108359749955,0.030468155662068702,0.1172380068791381,1.461496366583719,2000,4,2000,2.0,0.1,5,continuous,marginal_est

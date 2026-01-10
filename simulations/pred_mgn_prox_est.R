@@ -9,7 +9,6 @@ w_dim <- as.integer(args[3])     # W 的维度
 alpha_ind <- as.integer(args[4])
 Gamma_ind <- as.integer(args[5])
 seed <- as.integer(args[6])
-discrete_ind <- ifelse(length(args) >= 7, as.integer(args[7]), 1)  # 0=continuous, 1=discrete (default: discrete)
 
 alphas = seq(0.1,0.9,by=0.1)
 gammas = c(1.5,2,2.5,3,5)
@@ -27,13 +26,8 @@ options(warn=-1)
 ########################################
 ## load util functions
 ########################################
-if (discrete_ind == 1) {
-  source("../utils/util_ate_discrete.R")
-  data_type <- "discrete"
-} else {
-  source("../utils/util_ate_multi.R")
-  data_type <- "continuous"
-}
+source("../utils/util_ate_multi.R")
+data_type <- "continuous"
 cat(paste(" - Running pred_mgn_prox_est: estimated bounds (robust + unaware + proximal), alpha", alpha, 
           ", Gamma", Gamma, ", n", n, ", p", p, ", w_dim", w_dim, ", seed", seed, ", type", data_type, "\n"), sep = '')
 
@@ -51,47 +45,24 @@ if(!dir.exists(out_dir)){
 ########################################
 alpha0 = 0
 n_test = 500
-u_dim = 20  # U 的类别数（离散版本）或维度数（连续版本）
+u_dim = 20  # U 的维度数
 beta = matrix(c(-0.531,0.126,-0.312,0.018,rep(0,p-4)), nrow=p)
 noise_level = 0.5
-x_levels = 5  # X 的类别数（仅用于离散版本）
-y_levels = 100  # Y1 的类别数（仅用于离散版本）
 # generate true probability of treatment
-if (discrete_ind == 1) {
-  pp = mean(data.gen.ate(n*1000, p, Gamma, beta, alpha0, obs=FALSE, u_dim, u_dim, x_levels, y_levels)$T)
-} else {
-  pp = mean(data.gen.ate(n*1000, p, Gamma, beta, alpha0, obs=FALSE)$T)
-}
+pp = mean(data.gen.ate(n*1000, p, Gamma, beta, alpha0, obs=FALSE)$T)
 
 set.seed(seed)
 ########################################
 ## 生成所有数据（在训练模型之前，确保数据生成的一致性）
 ########################################
 # 生成训练数据
-if (discrete_ind == 1) {
-  # Discrete version: use discrete data generation
-  # 注意：对于 robust 和 unaware 方法，使用 u_dim, u_dim 确保与 pred_mgn_est.R 一致
-  train.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, x_levels, y_levels)
-} else {
-  # Continuous version: use continuous data generation
-  train.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, noise_level)
-}
+train.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, noise_level)
 
 # 生成校准数据
-if (discrete_ind == 1) {
-  # 注意：对于 robust 和 unaware 方法，使用 u_dim, u_dim 确保与 pred_mgn_est.R 一致
-  calib.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, x_levels, y_levels)
-} else {
-  calib.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, noise_level)
-}
+calib.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, noise_level)
 
 # 生成测试数据
-if (discrete_ind == 1) {
-  # 注意：对于 robust 和 unaware 方法，使用 u_dim, u_dim 确保与 pred_mgn_est.R 一致
-  test.data = data.gen.ate(n_test, p, Gamma, beta, alpha0, obs=FALSE, u_dim, u_dim, x_levels, y_levels)
-} else {
-  test.data = data.gen.ate(n_test, p, Gamma, beta, alpha0, obs=FALSE, u_dim, u_dim, noise_level)
-}
+test.data = data.gen.ate(n_test, p, Gamma, beta, alpha0, obs=FALSE, u_dim, u_dim, noise_level)
 
 ########################################
 ## 训练所有模型（在数据生成之后）
@@ -116,34 +87,28 @@ train.ex.check = predict(e.model, newdata=head(train.data$X, 5))$predictions
 cat("   e.model predictions (first 5):", train.ex.check, "\n")
 
 # 【Proximal新增】：训练 proxy-based propensity（同样基于观测数据）
-# 根据数据类型选择 W 的生成方式
-if (discrete_ind == 1) {
-  # Discrete version: W is already generated in data.gen.ate
-  train.W.full = train.data$W
+# 生成 W from U + noise
+# 当 w_dim > u_dim 时，创建固定的混合矩阵（确保可重复性）
+if (w_dim > u_dim) {
+  set.seed(seed + 999)  # 固定种子确保混合矩阵可重复
+  extra_cols = w_dim - u_dim
+  M_extra = matrix(rnorm(u_dim * extra_cols), nrow=u_dim, ncol=extra_cols)
 } else {
-  # Continuous version: generate W from U + noise
-  # 当 w_dim > u_dim 时，创建固定的混合矩阵（确保可重复性）
-  if (w_dim > u_dim) {
-    set.seed(seed + 999)  # 固定种子确保混合矩阵可重复
-    extra_cols = w_dim - u_dim
-    M_extra = matrix(rnorm(u_dim * extra_cols), nrow=u_dim, ncol=extra_cols)
-  } else {
-    M_extra = NULL
-  }
-  
-  # 为全部训练数据生成 proxy W
-  if (w_dim < u_dim) {
-    train.W.full = train.data$U[, 1:w_dim] + matrix(rnorm(nrow(train.data$X) * w_dim) * noise_level, nrow=nrow(train.data$X), ncol=w_dim)
-  } else if (w_dim == u_dim) {
-    train.W.full = train.data$U + matrix(rnorm(nrow(train.data$X) * u_dim) * noise_level, nrow=nrow(train.data$X), ncol=u_dim)
-  } else {
-    extra_cols = w_dim - u_dim
-    W_extra.full = train.data$U %*% M_extra + matrix(rnorm(nrow(train.data$X) * extra_cols) * noise_level, nrow=nrow(train.data$X), ncol=extra_cols)
-    train.W.full = cbind(
-      train.data$U + matrix(rnorm(nrow(train.data$X) * u_dim) * noise_level, nrow=nrow(train.data$X), ncol=u_dim),
-      W_extra.full
-    )
-  }
+  M_extra = NULL
+}
+
+# 为全部训练数据生成 proxy W
+if (w_dim < u_dim) {
+  train.W.full = train.data$U[, 1:w_dim] + matrix(rnorm(nrow(train.data$X) * w_dim) * noise_level, nrow=nrow(train.data$X), ncol=w_dim)
+} else if (w_dim == u_dim) {
+  train.W.full = train.data$U + matrix(rnorm(nrow(train.data$X) * u_dim) * noise_level, nrow=nrow(train.data$X), ncol=u_dim)
+} else {
+  extra_cols = w_dim - u_dim
+  W_extra.full = train.data$U %*% M_extra + matrix(rnorm(nrow(train.data$X) * extra_cols) * noise_level, nrow=nrow(train.data$X), ncol=extra_cols)
+  train.W.full = cbind(
+    train.data$U + matrix(rnorm(nrow(train.data$X) * u_dim) * noise_level, nrow=nrow(train.data$X), ncol=u_dim),
+    W_extra.full
+  )
 }
 train.XW.full = cbind(train.data$X, train.W.full)
 e.model.prox = regression_forest(train.XW.full, train.data$T, num.threads = 1)
@@ -186,15 +151,8 @@ compute_lx_ux_from_e <- function(e_model, X_mat, W_grid, pbar, eps = 1e-3) {
 
 ## sample candidate W grid from training W (for robustness and efficiency)
 set.seed(seed + 123)
-if (discrete_ind == 1) {
-  # Discrete version: W is a vector, need to convert to matrix for grid sampling
-  w_grid_size <- min(30, length(train.W.full))
-  W.grid <- matrix(train.W.full[sample(length(train.W.full), w_grid_size)], ncol=1)
-} else {
-  # Continuous version: W is a matrix
-  w_grid_size <- min(30, nrow(train.W.full))
-  W.grid <- train.W.full[sample(nrow(train.W.full), w_grid_size), , drop = FALSE]
-}
+w_grid_size <- min(30, nrow(train.W.full))
+W.grid <- train.W.full[sample(nrow(train.W.full), w_grid_size), , drop = FALSE]
 
 ########################################
 ## calibration 

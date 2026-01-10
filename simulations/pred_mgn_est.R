@@ -8,7 +8,6 @@ n <- as.integer(args[2])
 alpha_ind <- as.integer(args[3])
 Gamma_ind <- as.integer(args[4])
 seed <- as.integer(args[5])
-discrete_ind <- ifelse(length(args) >= 6, as.integer(args[6]), 0)  # 0=continuous, 1=discrete (default: continuous)
 
 alphas = seq(0.1,0.9,by=0.1)
 gammas = c(1.5,2,2.5,3,5)
@@ -26,13 +25,8 @@ options(warn=-1)
 ########################################
 ## load util functions
 ########################################
-if (discrete_ind == 1) {
-  source("../utils/util_ate_discrete.R")
-  data_type <- "discrete"
-} else {
-  source("../utils/util_ate.R")
-  data_type <- "continuous"
-}
+source("../utils/util_ate.R")
+data_type <- "continuous"
 cat(paste(" - Running the script with marginally-valid algorithm and estimated bounds, alpha ", alpha, ", Gamma ",Gamma,
           ", n ", n, ", p ", p, ", seed ", seed, ", type ", data_type, "\n"), sep = '')
 
@@ -52,28 +46,17 @@ if(!dir.exists(out_dir)){
 ########################################
 alpha0 = 0
 n_test = 500
-u_dim = 20  # U 的类别数（离散版本）或维度数（连续版本）
 beta = matrix(c(-0.531,0.126,-0.312,0.018,rep(0,p-4)), nrow=p)
 noise_level = 0.5
-x_levels = 5  # X 的类别数（仅用于离散版本）
-y_levels = 100  # Y1 的类别数（仅用于离散版本）
 # generate true probability of treatment
-if (discrete_ind == 1) {
-  pp = mean(data.gen.ate(n*1000, p, Gamma, beta, alpha0, obs=FALSE, u_dim, u_dim, x_levels, y_levels)$T)
-} else {
-  pp = mean(data.gen.ate(n*1000, p, Gamma, beta, alpha0, obs=FALSE)$T)
-}
+pp = mean(data.gen.ate(n*1000, p, Gamma, beta, alpha0, obs=FALSE)$T)
 
 
 set.seed(seed)
 ########################################
 ## fit on the training fold
 ########################################
-if (discrete_ind == 1) {
-  train.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, x_levels, y_levels)
-} else {
-  train.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE)
-}
+train.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE)
 train.X = (train.data$X[train.data$T==1,])[1:n,]
 train.Y = (train.data$Y1[train.data$T==1])[1:n]
 # train the nonconformity score function
@@ -94,11 +77,7 @@ cat("   e.model predictions (first 5):", train.ex.check, "\n")
 ########################################
 ## calibration 
 ########################################
-if (discrete_ind == 1) {
-  calib.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE, u_dim, u_dim, x_levels, y_levels)
-} else {
-  calib.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE)
-}
+calib.data = data.gen.ate(n, p, Gamma, beta, alpha0, obs=TRUE)
 calib.X = (calib.data$X[calib.data$T==1,])[1:n,]
 calib.Y = (calib.data$Y1[calib.data$T==1])[1:n]
 calib.ex = predict(e.model, newdata=calib.X)$predictions  
@@ -136,7 +115,6 @@ calib.all = calib.all[order(calib.all$score),]
 rownames(calib.all) = 1:dim(calib.all)[1]
 
 # calculate estimation error and actual gap
-# 注意：离散版本也返回exu字段
 calib.true.exu = calib.data$exu
 calib.true.ex = calib.data$ex
 calib.true.wx = pp / calib.true.exu
@@ -148,11 +126,7 @@ l_inv = mean(1/calib.lx)
 ########################################
 ## generate test fold
 ########################################
-if (discrete_ind == 1) {
-  test.data = data.gen.ate(n_test, p, Gamma, beta, alpha0, obs=FALSE, u_dim, u_dim, x_levels, y_levels)
-} else {
-  test.data = data.gen.ate(n_test, p, Gamma, beta, alpha0, obs=FALSE)
-}
+test.data = data.gen.ate(n_test, p, Gamma, beta, alpha0, obs=FALSE)
 test.X = test.data$X
 test.Y1 = test.data$Y1
 test.ex = predict(e.model, newdata=test.X)$predictions 

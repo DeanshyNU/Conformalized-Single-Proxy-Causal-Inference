@@ -1,0 +1,2 @@
+"","c.cov","c.len","c.size","nc.cov","nc.len","nc.size","gap","l_err","u_err","l_inv","n","p","n_calib","n_test","gamma","alpha","seed","data_type","method","rf_min_node_size","y_levels","note"
+"1",0.932,13.5867494314468,13.364,0.86,11.4798326754971,10.716,0.116528235252618,0.0591064738812906,0.235831079635191,1.34915499837843,2000,4,2000,500,2,0.1,1,"discrete","marginal_est",5,200,"n_test=500, min.node.size=5, jitter=U(-0.1,0.1), ex_clip=1e-3, weight_clip=99%"

@@ -1,0 +1,2 @@
+"","c.cov","c.len","nc.cov","nc.len","n","p","n_calib","n_test","gamma","alpha","seed","data_type","method","rf_min_node_size","note"
+"1",0.951,49.1695400623174,0.809,33.1526309399435,1500,4,1500,2000,3,0.1,104,"discrete","marginal",8,"n_test=2000, min.node.size=8"

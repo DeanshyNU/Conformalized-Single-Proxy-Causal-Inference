@@ -1,18 +1,29 @@
 ############################################################
-#####   discrete data generating process (softmax)    ######
+#####   discrete data generating process (Binomial)   ######
 # n: output sample size 
 # p: covariate dimension 
 # Gamma: confounding level
-# beta, alpha0: linear coefficients (for compatibility, not directly used in discrete case)
-# u_dim: number of discrete categories for U (default 20, U takes values {1, 2, ..., u_dim})
+# beta, alpha0: linear coefficients (for compatibility)
+# u_dim: must be EVEN (default 20), determines range of centered U (n_trials = u_dim - 1 internally)
 # w_dim: number of discrete categories for W (default 20, W takes values {1, 2, ..., w_dim})
-# x_levels: number of discrete categories for X (default 20, X takes values {1, 2, ..., x_levels})
+# x_levels: number of discrete categories for X (default 10, X takes values {1, 2, ..., x_levels})
 # y_levels: number of discrete categories for Y1 (default 100, Y1 takes values {1, 2, ..., y_levels})
 # obs = TRUE generate observations (training data) of size n
 # obs = FALSE generate all data of size n
+# U generation: Binomial(u_dim-1, p_u(X)) then centered to range [-(u_dim-1)/2, (u_dim-1)/2]
+#               where p_u(X) = logistic([1, X] %*% beta_u_vec)
+# T generation: randomized threshold method to ensure E[P(A|U,X)|X] = P(A|X) exactly
 ############################################################
 
-data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=20, x_levels=5, y_levels=100, coeff_seed=12345){
+data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=20, x_levels=10, y_levels=100, coeff_seed=12345){
+  # Check that u_dim is even
+  if (u_dim %% 2 != 0) {
+    stop("u_dim must be even for proper centering")
+  }
+  
+  # Set n_trials based on u_dim (ensures U has u_dim possible values)
+  n_trials = u_dim - 1
+  
   # X: discrete (parameters from Unif[0.1, 1] for each dimension)
   # For each dimension j, sample x_levels parameters from Unif[0.1, 1]
   # Normalize to probabilities and sample discrete values
@@ -37,19 +48,29 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=
   # Use fixed seed to generate coefficients (ensures reproducibility)
   set.seed(coeff_seed)
   
-  # Initialize coefficient matrices (from Unif[-0.5, 0.5])
-  # For P(U|X): beta_u is (u_dim x (p+1)) matrix
-  # Features: [1 (intercept), X (p)] = p + 1
-  # Note: β_{u} coefficients must be non-zero (sampling from Unif[-0.5, 0.5] ensures high probability of non-zero)
-  beta_u = matrix(runif(u_dim*(p+1), -0.5, 0.5), nrow=u_dim, ncol=p+1)
+  # Initialize coefficient vectors with dynamic intercept strategy
+  # Strategy: Keep slopes moderate to avoid sigmoid saturation, and compute
+  # intercept dynamically to center p_u(X) around 0.5, ensuring U can take
+  # all possible values symmetrically. This avoids the polarization effect.
+  beta_slopes = runif(p, -0.8, 0.8)  # Moderate slopes to avoid saturation
+  # Note: intercept will be computed dynamically after X is normalized
   
   # For P(W|U,X): beta_w is (w_dim x (p+2)) matrix
-  # Features: [1 (intercept), U (1), X (p)] = 1 + 1 + p = p + 2
+  # Features: [1 (intercept), U (continuous centered), X (p)] = 1 + 1 + p = p + 2
   # Note: β_{w,U} must be non-zero to ensure W is relevant to U
-  beta_w = matrix(runif(w_dim*(p+2), -0.5, 0.5), nrow=w_dim, ncol=p+2)
+  # 【关键修改】增强 W 对 U 的依赖：分别生成不同范围的列，然后组合
+  # 这样既保持随机数序列一致（确保 robust/unaware 结果不变），又让 U 列独立从更大范围采样
+  # 第1列（intercept）：[-0.5, 0.5]
+  beta_w_col1 = runif(w_dim, -0.5, 0.5)
+  # 第2列（U列）：[-1.5, 1.5] - 增强依赖，使 W 携带更多关于 U 的信息
+  beta_w_U = runif(w_dim, -1.5, 1.5)
+  # 第3到p+2列（X列）：[-0.5, 0.5]
+  beta_w_X = matrix(runif(w_dim*p, -0.5, 0.5), nrow=w_dim, ncol=p)
+  # 组合成完整矩阵
+  beta_w = cbind(beta_w_col1, beta_w_U, beta_w_X)
   
   # For P(Y1|U,X): beta_y is (y_levels x (p+2)) matrix
-  # Features: [1 (intercept), U (1), X (p)] = 1 + 1 + p = p + 2
+  # Features: [1 (intercept), U (continuous centered), X (p)] = 1 + 1 + p = p + 2
   # Note: Y1 does NOT depend on A (treatment), only on U and X (for counterfactual prediction)
   beta_y = matrix(runif(y_levels*(p+2), -0.5, 0.5), nrow=y_levels, ncol=p+2)
   
@@ -62,23 +83,36 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=
     assign(".Random.seed", old_seed, envir = .GlobalEnv)
   }
   
-  # 归一化X和U，将类别索引映射到[0,1]，避免logits过大导致softmax饱和
+  # 归一化X，将类别索引映射到[0,1]
   # 将 1~x_levels 映射到 0~1
   X_normalized = (X - 1) / (x_levels - 1)
   
-  # Generate U using softmax P(U|X)
-  # U is a vector of length n, each element takes values {1, 2, ..., u_dim}
-  U = numeric(n)
-  for (i in 1:n) {
-    # 使用归一化后的X计算logit，避免数值量级过大
-    x_vec = c(1, X_normalized[i,])  # intercept + normalized X
-    logits_u = beta_u %*% x_vec
-    probs_u = exp(logits_u) / sum(exp(logits_u))
-    U[i] = sample(1:u_dim, size=1, prob=probs_u)
-  }
+  # Generate U using Center-Shifted Binomial with dynamic intercept
+  # Strategy: Compute intercept dynamically to center p_u(X) around 0.5
+  # This ensures U can take all possible values symmetrically
+  # Step 1: Compute linear part (slopes only, no intercept)
+  linear_part = X_normalized %*% beta_slopes  # n x 1 vector
   
-  # 归一化U，将 1~u_dim 映射到 0~1
-  U_normalized = (U - 1) / (u_dim - 1)
+  # Step 2: Compute dynamic intercept to center linear_pred at 0
+  # This makes p_u(X) centered around 0.5, ensuring symmetric U distribution
+  intercept = -mean(linear_part)
+  
+  # Step 3: Compute p_u(X) = logistic(intercept + linear_part)
+  linear_pred = intercept + linear_part  # n x 1 vector
+  p_u = plogis(linear_pred)  # n x 1 vector
+  
+  # Step 4: Sample U_raw ~ Binomial(n_trials, p_u(X)) and center
+  U_raw = rbinom(n, size=n_trials, prob=p_u)
+  U = U_raw - n_trials/2
+  
+  # Debugging: Check U generation (disabled - already verified)
+  # if (obs == FALSE) {
+  #   ... (debugging code removed)
+  # }
+  
+  # 归一化U用于后续 W 和 Y1 的生成（映射到合理的数值范围）
+  # U 范围: [-n_trials/2, n_trials/2], 归一化到 [-1, 1]
+  U_normalized = U / (n_trials/2)
   
   # Generate W using softmax P(W|U,X)
   # W is a vector of length n, each element takes values {1, 2, ..., w_dim}
@@ -124,52 +158,136 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=
   }
   p.x = pmax(pmin(p.x, 0.99), 0.01)  # 限制在[0.01, 0.99]范围内
   
-  # For discrete U, we need to find threshold t(x) based on U distribution
-  # Since U is discrete (values from 1 to u_dim), we use a quantile-based threshold
-  # The threshold should be chosen such that approximately p(x) proportion of U values exceed it
-  # For discrete case: we want P(|U - center| > t(x)) ≈ p(x)
-  # We'll use quantiles of U levels based on p(x)
-  u_center = (u_dim + 1) / 2  # Center of U levels (e.g., 3 for u_dim=5)
+  # Randomized threshold method for discrete U (Binomial)
+  # Goal: Ensure P(Tail | X=x) = p(x) EXACTLY through randomization
+  # Key: U is now centered around 0, ranging from -(n_trials/2) to +(n_trials/2)
   
-  # Compute P(A|U,X) for each observation
-  # For discrete U, we use the indicator: 1{|U - center| > threshold}
-  # The threshold is chosen to match p(x) approximately
   prop.xu = numeric(n)
   for (i in 1:n) {
-    # Calculate threshold based on p(x): we want p(x) proportion in the tails
-    # For discrete U, find the quantile threshold
-    # If p(x) = 0.9, we want 90% of U values in the tails (wide tail region)
-    # If p(x) = 0.1, we want 10% of U values in the tails (narrow tail region)
-    # Lower threshold: floor(p.x[i]/2 * u_dim) - larger p.x gives larger threshold
-    # Upper threshold: ceiling((1 - p.x[i]/2) * u_dim) - larger p.x gives smaller threshold
-    lower_thresh = max(1, floor(p.x[i]/2 * u_dim))
-    upper_thresh = min(u_dim, ceiling((1 - p.x[i]/2) * u_dim))
+    # Step 1: Compute P(U|X=x_i) for all possible U values
+    # For Binomial: U_raw ~ Binomial(n_trials, p_u[i]), then U = U_raw - n_trials/2
+    # So P(U = k | X=x_i) = P(U_raw = k + n_trials/2 | X=x_i) = dbinom(k + n_trials/2, n_trials, p_u[i])
     
-    # If U is in the tails (far from center), use a(x) (higher treatment probability)
-    # Otherwise, use b(x) (lower treatment probability)
-    if (U[i] <= lower_thresh || U[i] >= upper_thresh) {
-      prop.xu[i] = a.x[i]
+    # All possible U values: -(n_trials/2) to +(n_trials/2)
+    u_values = seq(-n_trials/2, n_trials/2, by=1)
+    u_raw_values = u_values + n_trials/2  # Convert back to U_raw scale [0, n_trials]
+    
+    # Compute probabilities for all possible U values
+    probs_u = dbinom(u_raw_values, size=n_trials, prob=p_u[i])
+    
+    # Step 2: Compute |U| (distance from center = 0)
+    u_abs = abs(u_values)
+    
+    # Step 3: Sort by |U| from large to small (tails first)
+    sorted_indices = order(u_abs, decreasing=TRUE)
+    sorted_u_abs = u_abs[sorted_indices]
+    sorted_probs = probs_u[sorted_indices]
+    sorted_u_values = u_values[sorted_indices]
+    
+    # Step 4: Find threshold k* such that:
+    # sum_{|u| > k*} P(U=u|X) < p(x) <= sum_{|u| >= k*} P(U=u|X)
+    cumprob = 0
+    threshold_index = 1  # Default: all in tail
+    threshold_distance = sorted_u_abs[1]
+    
+    for (j in 1:length(sorted_indices)) {
+      if (cumprob >= p.x[i]) {
+        # Found the threshold: previous distance was k*
+        threshold_index = j - 1
+        if (threshold_index >= 1) {
+          threshold_distance = sorted_u_abs[threshold_index]
+        }
+        break
+      }
+      cumprob = cumprob + sorted_probs[j]
+      threshold_distance = sorted_u_abs[j]
+      threshold_index = j
+    }
+    
+    # Step 5: Compute fill probability r
+    # cumprob_before_k_star = sum of probabilities for |u| > threshold_distance
+    # cumprob_at_k_star = probability at |u| = threshold_distance
+    cumprob_before = 0
+    prob_at_threshold = 0
+    
+    for (j in 1:length(sorted_indices)) {
+      if (sorted_u_abs[j] > threshold_distance) {
+        cumprob_before = cumprob_before + sorted_probs[j]
+      } else if (sorted_u_abs[j] == threshold_distance) {
+        prob_at_threshold = prob_at_threshold + sorted_probs[j]
+      }
+    }
+    
+    # r = (p(x) - cumprob_before) / prob_at_threshold
+    if (prob_at_threshold > 1e-10) {
+      r = (p.x[i] - cumprob_before) / prob_at_threshold
+      r = pmax(0, pmin(1, r))  # Clip to [0, 1]
     } else {
-      prop.xu[i] = b.x[i]
+      r = 0
+    }
+    
+    # Step 6: Determine if U[i] is in Tail
+    u_i_abs = abs(U[i])
+    
+    if (u_i_abs > threshold_distance) {
+      # Definitely in Tail
+      is_tail = TRUE
+    } else if (u_i_abs < threshold_distance) {
+      # Definitely in Center
+      is_tail = FALSE
+    } else {
+      # At boundary: randomize with probability r
+      is_tail = (runif(1) < r)
+    }
+    
+    # Step 7: Set prop.xu based on Tail/Center status
+    if (is_tail) {
+      prop.xu[i] = a.x[i]  # Tail: use lower bound (less likely to be treated)
+    } else {
+      prop.xu[i] = b.x[i]  # Center: use upper bound (more likely to be treated)
     }
   }
   
   # Generate T from P(A|U,X)
   TT = rbinom(n, size=1, prob=prop.xu)
   
-  # Generate Y1 using softmax P(Y1|U,X)
+  # Debugging: Check T generation (disabled - already verified)
+  # if (obs == FALSE) {
+  #   ... (debugging code removed)
+  # }
+  
+  # Generate Y1 using direct linear combination (no normalization)
   # Y1 does NOT depend on A (treatment), only on U and X
-  # This is consistent with the continuous version: Y1 = X %*% beta + U
-  Y1 = numeric(n)
-  for (i in 1:n) {
-    # 使用归一化后的U和X计算logit，避免数值量级过大
-    # Feature vector: [1, U_normalized[i], X_normalized[i,]] (NO A/TT)
-    features = c(1, U_normalized[i], X_normalized[i,])
-    
-    logits_y = beta_y %*% features
-    probs_y = exp(logits_y) / sum(exp(logits_y))
-    Y1[i] = sample(1:y_levels, size=1, prob=probs_y)
-  }
+  # Method: Y_latent = base_intercept + X_effect + U_effect, then discretize
+  # This gives clear physical meaning: gamma_u = 1.0 means 1 integer unit offset
+  
+  # Use continuous version's beta coefficients
+  beta_continuous = c(-0.531, 0.126, -0.312, 0.018, rep(0, p-4)) * 2.0
+  beta_matrix = matrix(beta_continuous, nrow=p)
+  
+  # X signal scaling factor (controls X's contribution to Y)
+  # X_normalized is in [0,1], beta coefficients are small, so we need to scale up
+  X_scale = 12  # Adjustable: controls how much X can affect Y (in integer units)
+  X_effect = as.vector(X_normalized %*% beta_matrix) * X_scale
+  
+  # U scaling factor (controls confounding strength in Y generation)
+  # U is in [-(n_trials/2), (n_trials/2)] = [-9.5, 9.5] for u_dim=20
+  # gamma_u = 1.0 means U can offset Y by up to 9.5 integer units
+  gamma_u = 1.5  # Adjustable parameter: direct integer unit offset
+  
+  # U's contribution to Y
+  U_effect = gamma_u * U
+  
+  # Generate latent continuous Y using direct linear combination
+  # Base intercept centers Y around y_levels/2 to ensure reasonable range
+  base_intercept = y_levels / 2  # 50 for y_levels=100
+  Y_latent = base_intercept + X_effect + U_effect
+  
+  # Direct discretization (round to nearest integer)
+  Y1 = round(Y_latent)
+  
+  # Ensure Y1 is within bounds (safety check)
+  Y1 = pmax(1, pmin(y_levels, Y1))
   
   if (obs==FALSE){
     return(list("T"=TT, "X"=X, "U"=U, "W"=W, "Y1"=Y1, "ex"=prop.x, "exu"=prop.xu))
@@ -178,7 +296,7 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=
     while (n_useful < n){
       add.data = data.gen.ate(n, p, Gamma, beta, alpha0, FALSE, u_dim, w_dim, x_levels, y_levels, coeff_seed)
       X = rbind(X, add.data$X)
-      U = c(U, add.data$U)  # U is now a vector
+      U = c(U, add.data$U)  # U is now a vector (centered)
       W = c(W, add.data$W)  # W is now a vector
       Y1 = c(Y1, add.data$Y1)
       prop.x = c(prop.x, add.data$ex)
@@ -190,6 +308,7 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=
   }
 }
 
+
 ############################################################
 #####   output nonconformity score and trained model  ######
 # X: covariate matrix
@@ -199,10 +318,17 @@ data.gen.ate <- function(n, p, Gamma, beta, alpha0=0, obs=TRUE, u_dim=20, w_dim=
 # quantile is the coverage (1-alpha)
 # Note: For discrete Y, we may need to adjust the scoring method
 ############################################################
-conform.score <- function(X, Y, method='cqr', trained_model = NULL, quantile=0.9){
+conform.score <- function(X, Y, method='cqr', trained_model = NULL, quantile=0.9, Y_original = NULL){
+  # Y_original: 如果提供，用于计算score（当Y是添加噪声后的连续版本时）
+  # 这样可以让RF用连续Y学习分位数，但用原始离散Y计算score
   if (method == 'cqr'){
     if (is.null(trained_model)){
-      trained_model = quantile_forest(X, Y, num.threads = 2)
+      # 调整参数以更好地处理离散Y
+      # 对离散Y添加小噪声后，RF能更好地学习分位数
+      trained_model = quantile_forest(X, Y, 
+                                      num.trees = 2000,  # 增加树的数量
+                                      min.node.size = 5,  # 节点大小
+                                      num.threads = 1)
     }
     # fit quantiles
     qs = predict(trained_model, X, quantile=c((1-quantile)/2, 1-(1-quantile)/2))
@@ -212,7 +338,9 @@ conform.score <- function(X, Y, method='cqr', trained_model = NULL, quantile=0.9
     }
     q_lo = qs[,1]
     q_hi = qs[,2]
-    score = pmax( Y-q_hi, q_lo-Y )
+    # 如果提供了Y_original，用原始Y计算score；否则用Y计算
+    Y_for_score = if (!is.null(Y_original)) Y_original else Y
+    score = pmax( Y_for_score-q_hi, q_lo-Y_for_score )
   }
   return(list("model"=trained_model, "score"=score))
 }

@@ -1,0 +1,2 @@
+"","c.cov","c.len","c.size","nc.cov","nc.len","nc.size","prox.cov","prox.len","prox.size","n","p","u_dim","w_dim","x_levels","y_levels","n_calib","n_test","gamma","alpha","seed","data_type","method","note"
+"1",0.9265,12.0041385987396,12.612,0.871,11.642999921956,10.856,0.904,11.8139571991125,11.656,2000,4,20,20,10,200,2000,2000,1.5,0.1,1,"discrete","marginal_plus_proximal_est_discrete","jitter=U(-0.1,0.1), W_grid=full_enum, ex_clip=1e-3, weight_clip=99%"
